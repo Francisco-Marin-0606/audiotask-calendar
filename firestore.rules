@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - email: string (required)
+    //   - displayName: string
+    //   - photoURL: string
+    //   - role: string (admin, user)
+    //   - workStartTime: string (HH:mm, work schedule start)
+    //   - workEndTime: string (HH:mm, work schedule end)
+    //   - workDays: list of numbers (0=Sun, 1=Mon, ..., 6=Sat)
+    //
+    // Collection: tasks
+    // Fields:
+    //   - title: string (required)
+    //   - description: string
+    //   - date: string (ISO date)
+    //   - startTime: string
+    //   - endTime: string
+    //   - type: string (audiovisual, personal, admin)
+    //   - attachments: list of maps
+    //   - completed: bool
+    //   - userId: string (required)
+    //   - createdAt: timestamp
+    //   - seriesId: string (optional, links recurring tasks)
+    //   - recurrenceIndex: number (optional, position in series)
+    //   - recurrenceTotal: number (optional, total in series)
+    //   - themeId: string (optional, groups tasks of a music theme)
+    //   - themeName: string (optional, display name for the theme)
+    //   - themeOrder: number (optional, step order within the theme)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "pancho.r.marin@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             data.email is string &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['title', 'date', 'userId', 'type']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.date is string &&
+             data.userId == request.auth.uid &&
+             data.type in ['audiovisual', 'personal', 'admin'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidTask(request.resource.data);
+      allow update: if isAuthenticated() && isValidTask(request.resource.data) && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}

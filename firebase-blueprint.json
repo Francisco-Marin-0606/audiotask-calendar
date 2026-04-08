@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "workStartTime": { "type": "string", "description": "Work schedule start time in HH:mm" },
+        "workEndTime": { "type": "string", "description": "Work schedule end time in HH:mm" },
+        "workDays": { "type": "array", "items": { "type": "number" }, "description": "Work days (0=Sun, 1=Mon, ..., 6=Sat)" }
+      },
+      "required": ["email", "role"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A task or event in the calendar",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the task" },
+        "description": { "type": "string", "description": "Detailed description" },
+        "date": { "type": "string", "format": "date", "description": "The date of the task" },
+        "startTime": { "type": "string", "description": "Start time in HH:mm format" },
+        "endTime": { "type": "string", "description": "End time in HH:mm format" },
+        "type": { "type": "string", "enum": ["audiovisual", "personal", "admin"], "description": "Category of the task" },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string", "enum": ["image", "audio"] },
+              "url": { "type": "string" }
+            }
+          }
+        },
+        "userId": { "type": "string", "description": "The UID of the owner" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "date", "userId", "type"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Collection of tasks"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    }
+  }
+}

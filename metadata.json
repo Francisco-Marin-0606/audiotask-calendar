@@ -1,0 +1,5 @@
+{
+  "name": "AudioTask Calendar",
+  "description": "Un calendario personalizado para organizar tareas audiovisuales, personales y administrativas con soporte para adjuntos de audio e imagen.",
+  "requestFramePermissions": []
+}
