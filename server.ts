@@ -1,8 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import multer from "multer";
-import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
@@ -10,45 +8,6 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
-
-// Ensure uploads directory exists
-const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
-  },
-});
-
-const upload = multer({ storage: storage });
-
-// API routes
-app.post("/api/upload", upload.single("file"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-  const fileUrl = `/uploads/${req.file.filename}`;
-  const mime = req.file.mimetype;
-  const fileType = mime.startsWith("image")
-    ? "image"
-    : mime.startsWith("video")
-      ? "video"
-      : (mime === "application/zip" || mime === "application/x-zip-compressed" || mime === "application/x-zip")
-        ? "zip"
-        : "audio";
-  res.json({ url: fileUrl, name: req.file.originalname, type: fileType });
-});
-
-// Serve uploaded files
-app.use("/uploads", express.static(uploadsDir));
 
 // Chat AI endpoint
 app.use(express.json({ limit: "1mb" }));

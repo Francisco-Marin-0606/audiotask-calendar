@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { Task, Attachment, SocialPlatform, SOCIAL_PLATFORMS } from '@/src/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -19,10 +19,13 @@ import {
   Cloud,
   Youtube,
   Disc3,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { uploadFile } from '@/src/lib/storage';
 
 interface ThemeFolder {
   themeId: string;
@@ -39,6 +42,7 @@ interface ThemeFilesViewProps {
   tasks: Task[];
   onPlayAudio: (url: string, name: string, themeId?: string, themeName?: string) => void;
   onViewText?: (name: string, content: string) => void;
+  onReplaceFile?: (taskId: string, attachmentIndex: number, newAttachment: Attachment) => Promise<void>;
   currentUserPhoto?: string;
   currentUserName?: string;
 }
@@ -99,8 +103,39 @@ function getFileIconColor(type: Attachment['type'], name?: string) {
   }
 }
 
-export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhoto, currentUserName }: ThemeFilesViewProps) {
+export function ThemeFilesView({ tasks, onPlayAudio, onViewText, onReplaceFile, currentUserPhoto, currentUserName }: ThemeFilesViewProps) {
   const [openThemeId, setOpenThemeId] = useState<string | null>(null);
+  const [replacingKey, setReplacingKey] = useState<string | null>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const pendingReplaceRef = useRef<{ taskId: string; idx: number } | null>(null);
+
+  const handleReplaceClick = (taskId: string, idx: number) => {
+    pendingReplaceRef.current = { taskId, idx };
+    replaceInputRef.current?.click();
+  };
+
+  const handleReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const pending = pendingReplaceRef.current;
+    if (!file || !pending || !onReplaceFile) return;
+
+    const key = `${pending.taskId}-${pending.idx}`;
+    setReplacingKey(key);
+    try {
+      const data = await uploadFile(file);
+      await onReplaceFile(pending.taskId, pending.idx, {
+        name: data.name,
+        type: data.type as Attachment['type'],
+        url: data.url,
+      });
+    } catch (err) {
+      console.error('Replace failed:', err);
+    } finally {
+      setReplacingKey(null);
+      pendingReplaceRef.current = null;
+      e.target.value = '';
+    }
+  };
 
   const themes = useMemo(() => {
     const map = new Map<string, ThemeFolder>();
@@ -159,6 +194,13 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
 
     return (
       <div className="flex-1 flex flex-col h-full">
+        <input
+          ref={replaceInputRef}
+          type="file"
+          className="hidden"
+          accept="image/*,audio/*,video/*,.zip,application/zip"
+          onChange={handleReplaceFile}
+        />
         {/* Breadcrumb */}
         <div className="flex items-center gap-1.5 px-6 py-3 border-b border-border/40 shrink-0">
           <button
@@ -188,7 +230,7 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
           <span className="w-28 text-center hidden sm:block">Paso</span>
           <span className="w-24 text-center">Fecha</span>
           <span className="w-20 text-center hidden lg:block">Propietario</span>
-          <span className="w-[68px] shrink-0" />
+          <span className="w-[88px] shrink-0" />
         </div>
 
         <ScrollArea className="flex-1">
@@ -229,9 +271,23 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
                         </span>
                       )}
                     </span>
-                    <div className="w-[68px] flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <div className="w-[88px] flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={(e) => e.stopPropagation()}>
                       {row.att.type !== 'text' && (
                         <>
+                          {onReplaceFile && (
+                            <button
+                              className="p-1.5 rounded-md hover:bg-muted text-muted-foreground"
+                              title="Reemplazar archivo"
+                              onClick={() => handleReplaceClick(row.taskId, row.idx)}
+                              disabled={replacingKey === `${row.taskId}-${row.idx}`}
+                            >
+                              {replacingKey === `${row.taskId}-${row.idx}` ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <RefreshCw size={14} />
+                              )}
+                            </button>
+                          )}
                           <a
                             href={row.att.url}
                             target="_blank"

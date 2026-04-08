@@ -10,6 +10,7 @@ import { CollaboratorPicker } from '@/src/components/CollaboratorPicker';
 import { useContacts } from '@/src/hooks/useContacts';
 import { Image, Music, X, Loader2, Repeat, Video, Package } from 'lucide-react';
 import { TimeScrollPicker } from '@/src/components/TimeScrollPicker';
+import { uploadFile } from '@/src/lib/storage';
 
 interface TaskFormProps {
   onSubmit: (data: any) => Promise<void>;
@@ -46,18 +47,9 @@ export function TaskForm({ onSubmit, initialData, onCancel }: TaskFormProps) {
     if (!file) return;
 
     setUploading(true);
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await response.json();
-      if (data.url) {
-        setAttachments([...attachments, { name: data.name, type: data.type, url: data.url }]);
-      }
+      const data = await uploadFile(file);
+      setAttachments([...attachments, { name: data.name, type: data.type, url: data.url }]);
     } catch (err) {
       console.error("Upload failed:", err);
     } finally {

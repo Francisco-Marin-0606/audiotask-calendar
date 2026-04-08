@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { auth, signIn, logOut } from '@/src/lib/firebase';
+import { uploadFile } from '@/src/lib/storage';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { useTasks } from '@/src/hooks/useTasks';
 import { useSettings } from '@/src/hooks/useSettings';
@@ -783,7 +784,20 @@ export default function App() {
         {/* Main Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden">
           {viewMode === 'files' ? (
-            <ThemeFilesView tasks={tasks} onPlayAudio={playAudioTrack} onViewText={(name, content) => setViewingText({ name, content })} currentUserPhoto={user?.photoURL || ''} currentUserName={user?.displayName || ''} />
+            <ThemeFilesView
+              tasks={tasks}
+              onPlayAudio={playAudioTrack}
+              onViewText={(name, content) => setViewingText({ name, content })}
+              onReplaceFile={async (taskId, attIdx, newAtt) => {
+                const task = tasks.find(t => t.id === taskId);
+                if (!task) return;
+                const updated = [...(task.attachments || [])];
+                updated[attIdx] = newAtt;
+                await undoableUpdateTask(taskId, { attachments: updated } as any);
+              }}
+              currentUserPhoto={user?.photoURL || ''}
+              currentUserName={user?.displayName || ''}
+            />
           ) : viewMode === 'list' ? (
             <ScrollArea className="flex-1 min-h-0">
               <div className="max-w-3xl mx-auto p-6 space-y-6">
@@ -1639,15 +1653,10 @@ export default function App() {
                       if (!file || !editingTask) return;
                       setUploadingDetail(true);
                       try {
-                        const formData = new FormData();
-                        formData.append('file', file);
-                        const response = await fetch('/api/upload', { method: 'POST', body: formData });
-                        const data = await response.json();
-                        if (data.url) {
-                          const newAttachments = [...(editingTask.attachments || []), { name: data.name, type: data.type, url: data.url }];
-                          await undoableUpdateTask(editingTask.id, { attachments: newAttachments } as any);
-                          setEditingTask({ ...editingTask, attachments: newAttachments } as Task);
-                        }
+                        const data = await uploadFile(file);
+                        const newAttachments = [...(editingTask.attachments || []), { name: data.name, type: data.type, url: data.url }];
+                        await undoableUpdateTask(editingTask.id, { attachments: newAttachments } as any);
+                        setEditingTask({ ...editingTask, attachments: newAttachments } as Task);
                       } catch (err) {
                         console.error('Upload failed:', err);
                       } finally {
