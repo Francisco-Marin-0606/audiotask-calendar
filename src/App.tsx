@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { auth, signIn, logOut } from '@/src/lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { useTasks } from '@/src/hooks/useTasks';
 import { useSettings } from '@/src/hooks/useSettings';
-import { Task } from '@/src/types';
+import { Task, ProposedTask } from '@/src/types';
 import { 
   format, 
   startOfMonth, 
@@ -148,6 +148,8 @@ export default function App() {
   const [audioProgress, setAudioProgress] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioPlaying, setAudioPlaying] = useState(true);
+  const [previewTasks, setPreviewTasks] = useState<ProposedTask[]>([]);
+  const handlePreviewTasks = useCallback((tasks: ProposedTask[]) => setPreviewTasks(tasks), []);
 
   const [dragSelection, setDragSelection] = useState<{
     dayIdx: number;
@@ -875,6 +877,29 @@ export default function App() {
                           </div>
                         );
                       })}
+                      {/* Ghost preview blocks from AI proposals */}
+                      {previewTasks
+                        .filter(pt => isSameDay(new Date(pt.date + 'T00:00:00'), day))
+                        .map((pt, ptIdx) => {
+                          const start = timeToMinutes(pt.startTime);
+                          const end = timeToMinutes(pt.endTime);
+                          const duration = end - start;
+                          const isCompact = duration < 45;
+                          return (
+                            <div
+                              key={`preview-${ptIdx}`}
+                              style={{ top: `${start}px`, height: `${Math.max(duration, 22)}px` }}
+                              className="absolute left-1 right-1 rounded-md overflow-hidden z-10 pointer-events-none border-2 border-dashed border-violet-400/60 bg-violet-500/15 animate-[task-preview-pulse_2s_ease-in-out_infinite]"
+                            >
+                              <div className={isCompact ? "px-2 py-0.5 flex items-center gap-1.5" : "p-1.5 px-2"}>
+                                <div className="truncate text-[11px] font-semibold leading-tight text-violet-300">{pt.title}</div>
+                                {!isCompact && (
+                                  <div className="text-[10px] text-violet-300/70 leading-tight">{pt.startTime} – {pt.endTime}</div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                     </div>
                   );
                 })}
@@ -1294,6 +1319,8 @@ export default function App() {
         settings={settings}
         user={user}
         onAddTasks={addMultipleTasks}
+        onAddTask={addTask}
+        onPreviewTasks={handlePreviewTasks}
       />
     </div>
   );

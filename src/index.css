@@ -128,3 +128,8 @@
     @apply font-sans;
     }
 }
+
+@keyframes task-preview-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.65; }
+}
