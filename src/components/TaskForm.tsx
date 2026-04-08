@@ -5,8 +5,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { TaskType, Attachment, RecurrenceConfig } from '@/src/types';
+import { TaskType, Attachment, RecurrenceConfig, Collaborator } from '@/src/types';
+import { CollaboratorPicker } from '@/src/components/CollaboratorPicker';
+import { useContacts } from '@/src/hooks/useContacts';
 import { Image, Music, X, Loader2, Repeat, Video, Package } from 'lucide-react';
+import { TimeScrollPicker } from '@/src/components/TimeScrollPicker';
 
 interface TaskFormProps {
   onSubmit: (data: any) => Promise<void>;
@@ -29,6 +32,8 @@ export function TaskForm({ onSubmit, initialData, onCancel }: TaskFormProps) {
   const [endTime, setEndTime] = useState(initialData?.endTime || '10:00');
   const [type, setType] = useState<TaskType>(initialData?.type || 'personal');
   const [attachments, setAttachments] = useState<Attachment[]>(initialData?.attachments || []);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>(initialData?.collaborators || []);
+  const { saveMultipleContacts } = useContacts();
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [isRecurring, setIsRecurring] = useState(false);
@@ -75,7 +80,13 @@ export function TaskForm({ onSubmit, initialData, onCancel }: TaskFormProps) {
             count: recurrenceCount,
           }
         : undefined;
-      await onSubmit({ title, description, date, startTime, endTime, type, attachments, recurrence });
+      await onSubmit({
+        title, description, date, startTime, endTime, type, attachments, recurrence,
+        ...(collaborators.length > 0 ? { collaborators } : {}),
+      });
+      if (collaborators.length > 0) {
+        await saveMultipleContacts(collaborators);
+      }
     } catch (err) {
       console.error("Submit failed:", err);
     } finally {
@@ -113,11 +124,11 @@ export function TaskForm({ onSubmit, initialData, onCancel }: TaskFormProps) {
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label htmlFor="startTime">Inicio</Label>
-          <Input id="startTime" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} required />
+          <TimeScrollPicker id="startTime" value={startTime} onChange={setStartTime} />
         </div>
         <div className="space-y-2">
           <Label htmlFor="endTime">Fin</Label>
-          <Input id="endTime" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} required />
+          <TimeScrollPicker id="endTime" value={endTime} onChange={setEndTime} />
         </div>
       </div>
 
@@ -190,6 +201,8 @@ export function TaskForm({ onSubmit, initialData, onCancel }: TaskFormProps) {
           </div>
         )}
       </div>
+
+      <CollaboratorPicker selected={collaborators} onChange={setCollaborators} />
 
       <div className="space-y-2">
         <Label>Adjuntos (Imágenes/Audio/Video/ZIP)</Label>

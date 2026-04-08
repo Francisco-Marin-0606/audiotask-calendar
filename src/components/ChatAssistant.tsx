@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, Send, Trash2, Check, XCircle, Bot, User as UserIcon, Calendar, Clock, Pencil, Repeat, ChevronDown, ChevronUp } from 'lucide-react';
+import { MessageCircle, X, Send, Trash2, Check, XCircle, Bot, User as UserIcon, Calendar, Clock, Pencil, Repeat, ChevronDown, ChevronUp, Instagram, Music2, Cloud, Youtube, Disc3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ReactMarkdown from 'react-markdown';
 import { useChatAssistant } from '@/src/hooks/useChatAssistant';
-import { Task, UserSettings, ProposedTask, ChatMessage, TaskType, RecurrenceConfig } from '@/src/types';
+import { Task, UserSettings, ProposedTask, ChatMessage, TaskType, RecurrenceConfig, SocialPlatform, SOCIAL_PLATFORMS } from '@/src/types';
 import type { User } from 'firebase/auth';
 import { format, parse } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -28,6 +28,22 @@ const TYPE_COLORS: Record<string, string> = {
   audiovisual: 'bg-purple-500/20 text-purple-300',
   personal: 'bg-blue-500/20 text-blue-300',
   admin: 'bg-amber-500/20 text-amber-300',
+};
+
+const PLATFORM_ICONS: Record<SocialPlatform, React.ComponentType<{ className?: string }>> = {
+  instagram: Instagram,
+  tiktok: Music2,
+  soundcloud: Cloud,
+  youtube: Youtube,
+  spotify: Disc3,
+};
+
+const PLATFORM_COLORS: Record<SocialPlatform, string> = {
+  instagram: 'text-pink-400',
+  tiktok: 'text-cyan-400',
+  soundcloud: 'text-orange-400',
+  youtube: 'text-red-400',
+  spotify: 'text-green-400',
 };
 
 function formatDateShort(dateStr: string) {
@@ -155,6 +171,17 @@ function EditableTaskCard({
           </span>
         </div>
       )}
+      {task.publishedOn && (() => {
+        const Icon = PLATFORM_ICONS[task.publishedOn];
+        const color = PLATFORM_COLORS[task.publishedOn];
+        const label = SOCIAL_PLATFORMS.find(p => p.id === task.publishedOn)?.label;
+        return (
+          <div className={`flex items-center gap-1 text-[11px] ${color}`}>
+            <Icon className="size-3" />
+            <span>{label}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -352,27 +379,23 @@ export function ChatAssistant({ tasks, settings, user, onAddTasks, onAddTask, on
 
     try {
       for (const p of msg.proposals) {
+        const base = {
+          title: p.title,
+          description: p.description,
+          date: p.date,
+          startTime: p.startTime,
+          endTime: p.endTime,
+          type: p.type,
+          attachments: [] as Task['attachments'],
+          ...(p.publishedOn ? { publishedOn: p.publishedOn } : {}),
+          ...(p.themeId ? { themeId: p.themeId } : {}),
+          ...(p.themeName ? { themeName: p.themeName } : {}),
+        };
+
         if (p.recurrence && p.recurrence.count > 1) {
-          await onAddTask({
-            title: p.title,
-            description: p.description,
-            date: p.date,
-            startTime: p.startTime,
-            endTime: p.endTime,
-            type: p.type,
-            attachments: [],
-            recurrence: p.recurrence,
-          });
+          await onAddTask({ ...base, recurrence: p.recurrence });
         } else {
-          await onAddTasks([{
-            title: p.title,
-            description: p.description,
-            date: p.date,
-            startTime: p.startTime,
-            endTime: p.endTime,
-            type: p.type,
-            attachments: [],
-          }]);
+          await onAddTasks([base]);
         }
       }
       updateProposalStatus(msg.id, 'accepted');

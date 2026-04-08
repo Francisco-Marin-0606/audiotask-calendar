@@ -1,43 +1,86 @@
 import { useState, useRef, useCallback } from 'react';
-import { ChatMessage, ProposedTask, Task, UserSettings, RecurrenceConfig } from '@/src/types';
+import { ChatMessage, ProposedTask, Task, UserSettings, RecurrenceConfig, SocialPlatform, SOCIAL_PLATFORMS } from '@/src/types';
 import { buildSystemPrompt } from '@/src/lib/chatSystemPrompt';
+
+function extractItems(arr: any[]): ProposedTask[] {
+  const validPlatformIds = SOCIAL_PLATFORMS.map(p => p.id);
+  const results: ProposedTask[] = [];
+  for (const item of arr) {
+    if (item.title && item.date && item.startTime && item.endTime) {
+      const proposal: ProposedTask = {
+        title: item.title,
+        description: item.description || '',
+        date: item.date,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        type: item.type || 'personal',
+      };
+      if (item.recurrence && item.recurrence.count > 1) {
+        proposal.recurrence = {
+          type: item.recurrence.type || 'daily',
+          interval: item.recurrence.interval || 1,
+          count: item.recurrence.count,
+        };
+      }
+      if (item.publishedOn && validPlatformIds.includes(item.publishedOn)) {
+        proposal.publishedOn = item.publishedOn as SocialPlatform;
+      }
+      if (item.themeId) proposal.themeId = item.themeId;
+      if (item.themeName) proposal.themeName = item.themeName;
+      results.push(proposal);
+    }
+  }
+  return results;
+}
 
 function parseProposals(text: string): { cleanText: string; proposals: ProposedTask[] } {
   const proposals: ProposedTask[] = [];
   let cleanText = text;
 
-  const regex = /\[TASK_PROPOSAL\]\s*([\s\S]*?)\s*\[\/TASK_PROPOSAL\]/g;
-  let match;
+  const patterns = [
+    /\[TASK_PROPOSAL\]\s*([\s\S]*?)\s*\[\/TASK_PROPOSAL\]/g,
+    /\[\/TASK_PROPOSAL\]\s*([\s\S]*?)\s*\[\/TASK_PROPOSAL\]/g,
+    /\[TASK_PROPOSAL\]\s*([\s\S]*?)\s*\[TASK_PROPOSAL\]/g,
+  ];
 
-  while ((match = regex.exec(text)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      const arr = Array.isArray(parsed) ? parsed : [parsed];
-      for (const item of arr) {
-        if (item.title && item.date && item.startTime && item.endTime) {
-          const proposal: ProposedTask = {
-            title: item.title,
-            description: item.description || '',
-            date: item.date,
-            startTime: item.startTime,
-            endTime: item.endTime,
-            type: item.type || 'personal',
-          };
-          if (item.recurrence && item.recurrence.count > 1) {
-            proposal.recurrence = {
-              type: item.recurrence.type || 'daily',
-              interval: item.recurrence.interval || 1,
-              count: item.recurrence.count,
-            };
-          }
-          proposals.push(proposal);
-        }
+  let matched = false;
+  for (const regex of patterns) {
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        proposals.push(...extractItems(arr));
+        matched = true;
+      } catch {
+        // JSON parse failed
       }
-    } catch {
-      // JSON parse failed — ignore malformed block
+      cleanText = cleanText.replace(match[0], '').trim();
     }
-    cleanText = cleanText.replace(match[0], '').trim();
+    if (matched) break;
   }
+
+  if (!matched) {
+    const jsonArrayMatch = text.match(/\[\s*\{[\s\S]*?"title"[\s\S]*?"date"[\s\S]*?"startTime"[\s\S]*?\}\s*\]/);
+    if (jsonArrayMatch) {
+      try {
+        const parsed = JSON.parse(jsonArrayMatch[0]);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        const items = extractItems(arr);
+        if (items.length > 0) {
+          proposals.push(...items);
+          cleanText = cleanText.replace(jsonArrayMatch[0], '').trim();
+        }
+      } catch {
+        // fallback parse failed
+      }
+    }
+  }
+
+  cleanText = cleanText
+    .replace(/\[\/?TASK_PROPOSAL\]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 
   return { cleanText, proposals };
 }

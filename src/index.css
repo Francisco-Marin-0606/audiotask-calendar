@@ -133,3 +133,10 @@
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.65; }
 }
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}

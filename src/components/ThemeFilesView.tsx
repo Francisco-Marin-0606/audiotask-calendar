@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Task, Attachment } from '@/src/types';
+import { Task, Attachment, SocialPlatform, SOCIAL_PLATFORMS } from '@/src/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -14,6 +14,11 @@ import {
   MoreVertical,
   Download,
   ExternalLink,
+  Instagram,
+  Music2,
+  Cloud,
+  Youtube,
+  Disc3,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
@@ -27,6 +32,7 @@ interface ThemeFolder {
   totalSteps: number;
   completedSteps: number;
   tasks: Task[];
+  publishedPlatforms: SocialPlatform[];
 }
 
 interface ThemeFilesViewProps {
@@ -51,6 +57,22 @@ function getFileIcon(type: Attachment['type'], name?: string) {
     default: return FileText;
   }
 }
+
+const PLATFORM_ICON_MAP: Record<SocialPlatform, React.ComponentType<{ size?: number; className?: string }>> = {
+  instagram: Instagram,
+  tiktok: Music2,
+  soundcloud: Cloud,
+  youtube: Youtube,
+  spotify: Disc3,
+};
+
+const PLATFORM_COLOR_MAP: Record<SocialPlatform, { active: string; inactive: string }> = {
+  instagram: { active: 'text-pink-400', inactive: 'text-muted-foreground/25' },
+  tiktok: { active: 'text-cyan-400', inactive: 'text-muted-foreground/25' },
+  soundcloud: { active: 'text-orange-400', inactive: 'text-muted-foreground/25' },
+  youtube: { active: 'text-red-400', inactive: 'text-muted-foreground/25' },
+  spotify: { active: 'text-green-400', inactive: 'text-muted-foreground/25' },
+};
 
 const STEP_SHORT_NAMES: Record<number, string> = {
   1: 'Beat',
@@ -96,6 +118,7 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
           totalSteps: 0,
           completedSteps: 0,
           tasks: [],
+          publishedPlatforms: [],
         };
         map.set(task.themeId, folder);
       }
@@ -105,6 +128,14 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
       folder.totalSteps++;
       if (task.completed) folder.completedSteps++;
       if (task.date < folder.createdAt) folder.createdAt = task.date;
+    }
+
+    for (const folder of map.values()) {
+      const published = new Set<SocialPlatform>();
+      for (const t of folder.tasks) {
+        if (t.publishedOn && t.completed) published.add(t.publishedOn);
+      }
+      folder.publishedPlatforms = [...published];
     }
 
     return Array.from(map.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -256,17 +287,35 @@ export function ThemeFilesView({ tasks, onPlayAudio, onViewText, currentUserPhot
                 <button
                   key={theme.themeId}
                   onClick={() => setOpenThemeId(theme.themeId)}
-                  className="flex items-center gap-3 px-4 py-3 rounded-xl border border-border/50 bg-muted/20 hover:bg-accent/60 transition-all text-left group"
+                  className="flex flex-col gap-2 px-4 py-3 rounded-xl border border-border/50 bg-muted/20 hover:bg-accent/60 transition-all text-left group"
                 >
-                  <Folder size={20} className="text-muted-foreground/70 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-sm truncate">{theme.themeName}</h3>
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      {format(new Date(theme.createdAt + 'T00:00:00'), "d MMM yyyy", { locale: es })}
-                      {' · '}{theme.totalFiles} archivo{theme.totalFiles !== 1 ? 's' : ''}
-                    </p>
+                  <div className="flex items-center gap-3 w-full">
+                    <Folder size={20} className="text-muted-foreground/70 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-medium text-sm truncate">{theme.themeName}</h3>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        {format(new Date(theme.createdAt + 'T00:00:00'), "d MMM yyyy", { locale: es })}
+                        {' · '}{theme.totalFiles} archivo{theme.totalFiles !== 1 ? 's' : ''}
+                      </p>
+                    </div>
+                    <MoreVertical size={16} className="text-muted-foreground/40 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                   </div>
-                  <MoreVertical size={16} className="text-muted-foreground/40 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="flex items-center gap-1.5 pl-0.5">
+                    {SOCIAL_PLATFORMS.map(platform => {
+                      const Icon = PLATFORM_ICON_MAP[platform.id];
+                      const isPublished = theme.publishedPlatforms.includes(platform.id);
+                      const colors = PLATFORM_COLOR_MAP[platform.id];
+                      return (
+                        <span
+                          key={platform.id}
+                          title={`${platform.label}${isPublished ? ' ✓' : ' — pendiente'}`}
+                          className={cn('transition-colors', isPublished ? colors.active : colors.inactive)}
+                        >
+                          <Icon size={14} />
+                        </span>
+                      );
+                    })}
+                  </div>
                 </button>
               ))}
             </div>

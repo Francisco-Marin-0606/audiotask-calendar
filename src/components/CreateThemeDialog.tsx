@@ -5,12 +5,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { Task, UserSettings, THEME_STEPS } from '@/src/types';
+import { Task, UserSettings, THEME_STEPS, Collaborator } from '@/src/types';
 import { scheduleTheme } from '@/src/lib/scheduleTheme';
+import { CollaboratorPicker } from '@/src/components/CollaboratorPicker';
+import { useContacts } from '@/src/hooks/useContacts';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Music, CalendarClock, Clock, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 interface CreateThemeDialogProps {
   open: boolean;
@@ -28,6 +29,8 @@ export function CreateThemeDialog({
   onCreateTheme,
 }: CreateThemeDialogProps) {
   const [themeName, setThemeName] = useState('');
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+  const { saveMultipleContacts } = useContacts();
   const [startDateStr, setStartDateStr] = useState(() => {
     const now = new Date();
     const y = now.getFullYear();
@@ -57,9 +60,16 @@ export function CreateThemeDialog({
     if (!preview || preview.length === 0) return;
     setSaving(true);
     try {
-      await onCreateTheme(preview);
+      const tasksWithCollaborators = collaborators.length > 0
+        ? preview.map(t => ({ ...t, collaborators }))
+        : preview;
+      await onCreateTheme(tasksWithCollaborators);
+      if (collaborators.length > 0) {
+        await saveMultipleContacts(collaborators);
+      }
       onOpenChange(false);
       setThemeName('');
+      setCollaborators([]);
       setPreview(null);
     } catch (err) {
       console.error('Error creating theme tasks:', err);
@@ -72,6 +82,7 @@ export function CreateThemeDialog({
     if (!isOpen) {
       setPreview(null);
       setThemeName('');
+      setCollaborators([]);
     }
     onOpenChange(isOpen);
   };
@@ -124,6 +135,8 @@ export function CreateThemeDialog({
                 onChange={(e) => setStartDateStr(e.target.value)}
               />
             </div>
+
+            <CollaboratorPicker selected={collaborators} onChange={setCollaborators} />
 
             <div className="space-y-2">
               <Label className="text-xs text-muted-foreground">Pasos del tema</Label>

@@ -7,12 +7,37 @@ export interface Attachment {
   content?: string;
 }
 
+export type SocialPlatform = 'instagram' | 'tiktok' | 'soundcloud' | 'youtube' | 'spotify';
+
+export const SOCIAL_PLATFORMS: { id: SocialPlatform; label: string }[] = [
+  { id: 'instagram', label: 'Instagram' },
+  { id: 'tiktok', label: 'TikTok' },
+  { id: 'soundcloud', label: 'SoundCloud' },
+  { id: 'youtube', label: 'YouTube' },
+  { id: 'spotify', label: 'Spotify' },
+];
+
 export type RecurrenceType = 'daily' | 'custom';
 
 export interface RecurrenceConfig {
   type: RecurrenceType;
   interval: number;   // 1 = every day, 2 = every 2 days, etc.
   count: number;       // total occurrences (including the first one)
+}
+
+export interface Collaborator {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL: string;
+}
+
+export interface SavedContact {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL: string;
+  lastUsed: any;
 }
 
 export interface Task {
@@ -35,6 +60,9 @@ export interface Task {
   themeId?: string;
   themeName?: string;
   themeOrder?: number;
+  publishedOn?: SocialPlatform;
+  collaborators?: Collaborator[];
+  participantIds?: string[];
 }
 
 export interface UserSettings {
@@ -85,6 +113,10 @@ export interface ProposedTask {
   endTime: string;
   type: TaskType;
   recurrence?: RecurrenceConfig;
+  publishedOn?: SocialPlatform;
+  themeId?: string;
+  themeName?: string;
+  collaborators?: Collaborator[];
 }
 
 export interface ChatMessage {

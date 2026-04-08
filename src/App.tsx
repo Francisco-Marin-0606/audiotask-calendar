@@ -66,7 +66,8 @@ import {
   SkipBack,
   SkipForward,
   Volume2,
-  Package
+  Package,
+  Users
 } from 'lucide-react';
 import { TaskForm } from './components/TaskForm';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -74,6 +75,8 @@ import { RescheduleDialog } from './components/RescheduleDialog';
 import { CreateThemeDialog } from './components/CreateThemeDialog';
 import { ThemeFilesView } from './components/ThemeFilesView';
 import { ChatAssistant } from './components/ChatAssistant';
+import { UndoToast } from './components/UndoToast';
+import { useUndo } from '@/src/hooks/useUndo';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import React from 'react';
@@ -129,10 +132,74 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewDate, setViewDate] = useState(new Date()); // For the mini calendar
-  const { tasks, loading, addTask, addMultipleTasks, updateTask, deleteTask, deleteTaskSeries, toggleComplete } = useTasks();
+  const { tasks, loading, addTask, addMultipleTasks, updateTask, deleteTask, deleteTaskSeries, toggleComplete, restoreTask, restoreMultipleTasks } = useTasks();
   const { settings, saveSettings } = useSettings();
+
+  const { pushUndo, executeUndo, canUndo, toastMessage, dismissToast, isUndoing } = useUndo({
+    deleteTask,
+    updateTask,
+    restoreTask,
+    restoreMultipleTasks,
+    toggleComplete,
+  });
+
+  const undoableAddTask = useCallback(async (data: any) => {
+    const ids = await addTask(data);
+    pushUndo({ type: 'create', label: `Crear tarea "${data.title}"`, createdIds: ids });
+  }, [addTask, pushUndo]);
+
+  const undoableAddMultipleTasks = useCallback(async (data: any) => {
+    const ids = await addMultipleTasks(data);
+    pushUndo({ type: 'create-multiple', label: `Crear ${ids.length} tareas`, createdIds: ids });
+  }, [addMultipleTasks, pushUndo]);
+
+  const undoableUpdateTask = useCallback(async (id: string, newData: Partial<Task>) => {
+    const current = tasks.find(t => t.id === id);
+    if (current) {
+      const previousData: Partial<Task> = {};
+      for (const key of Object.keys(newData) as (keyof Task)[]) {
+        (previousData as any)[key] = current[key];
+      }
+      pushUndo({ type: 'update', label: `Editar "${current.title}"`, taskId: id, previousData });
+    }
+    await updateTask(id, newData);
+  }, [tasks, updateTask, pushUndo]);
+
+  const undoableDeleteTask = useCallback(async (id: string) => {
+    const task = tasks.find(t => t.id === id);
+    if (task) {
+      const { id: taskId, ...data } = task;
+      pushUndo({ type: 'delete', label: `Eliminar "${task.title}"`, fullTaskData: { id: taskId, ...data } });
+    }
+    await deleteTask(id);
+  }, [tasks, deleteTask, pushUndo]);
+
+  const undoableDeleteTaskSeries = useCallback(async (seriesId: string) => {
+    const seriesTasks = tasks.filter(t => t.seriesId === seriesId);
+    if (seriesTasks.length > 0) {
+      const fullData = seriesTasks.map(t => {
+        const { id, ...data } = t;
+        return { id, data };
+      });
+      pushUndo({ type: 'delete-series', label: `Eliminar serie (${seriesTasks.length} tareas)`, fullTasksData: fullData });
+    }
+    await deleteTaskSeries(seriesId);
+  }, [tasks, deleteTaskSeries, pushUndo]);
+
+  const undoableToggleComplete = useCallback(async (id: string, currentValue: boolean) => {
+    const task = tasks.find(t => t.id === id);
+    pushUndo({
+      type: 'toggle-complete',
+      label: `${currentValue ? 'Desmarcar' : 'Completar'} "${task?.title || ''}"`,
+      taskId: id,
+      previousCompleted: currentValue,
+    });
+    await toggleComplete(id, currentValue);
+  }, [tasks, toggleComplete, pushUndo]);
+
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [isDetailEditMode, setIsDetailEditMode] = useState(false);
   const [playingAudio, setPlayingAudio] = useState<{ url: string; name: string; themeName?: string; coverUrl?: string } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isThemeOpen, setIsThemeOpen] = useState(false);
@@ -168,6 +235,26 @@ export default function App() {
     columnEl: HTMLDivElement;
   } | null>(null);
 
+  const [taskDrag, setTaskDrag] = useState<{
+    task: Task;
+    targetDayIdx: number;
+    targetTop: number;
+    duration: number;
+  } | null>(null);
+  const taskDragRef = useRef<{
+    task: Task;
+    duration: number;
+    offsetY: number;
+    startClientX: number;
+    startClientY: number;
+    hasMoved: boolean;
+  } | null>(null);
+  const taskDragTargetRef = useRef<{ dayIdx: number; top: number } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const weekDaysRef = useRef<Date[]>([]);
+  const updateTaskRef = useRef(undoableUpdateTask);
+  updateTaskRef.current = undoableUpdateTask;
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
@@ -189,6 +276,34 @@ export default function App() {
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
+      if (taskDragRef.current) {
+        const { startClientX, startClientY, offsetY } = taskDragRef.current;
+        const dx = e.clientX - startClientX;
+        const dy = e.clientY - startClientY;
+        if (!taskDragRef.current.hasMoved && Math.sqrt(dx * dx + dy * dy) < 5) return;
+        if (!taskDragRef.current.hasMoved) {
+          taskDragRef.current.hasMoved = true;
+          document.body.style.cursor = 'grabbing';
+          document.body.style.userSelect = 'none';
+        }
+        const grid = gridRef.current;
+        if (!grid) return;
+        const gridRect = grid.getBoundingClientRect();
+        const colWidth = gridRect.width / 7;
+        const relX = e.clientX - gridRect.left;
+        const targetDayIdx = Math.max(0, Math.min(6, Math.floor(relX / colWidth)));
+        const rawMinutes = e.clientY - gridRect.top - offsetY;
+        const targetTop = snapTo15(rawMinutes);
+        taskDragTargetRef.current = { dayIdx: targetDayIdx, top: targetTop };
+        setTaskDrag({
+          task: taskDragRef.current.task,
+          targetDayIdx,
+          targetTop,
+          duration: taskDragRef.current.duration,
+        });
+        return;
+      }
+
       if (!dragRef.current) return;
       const rect = dragRef.current.columnEl.getBoundingClientRect();
       const currentY = e.clientY - rect.top;
@@ -201,6 +316,34 @@ export default function App() {
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      if (taskDragRef.current) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        if (taskDragRef.current.hasMoved && taskDragTargetRef.current) {
+          const target = taskDragTargetRef.current;
+          const days = weekDaysRef.current;
+          if (days[target.dayIdx]) {
+            const task = taskDragRef.current.task;
+            const newDate = format(days[target.dayIdx], 'yyyy-MM-dd');
+            const newStart = target.top;
+            const newEnd = Math.min(newStart + taskDragRef.current.duration, 1440);
+            if (newDate !== task.date || minutesToTime(newStart) !== task.startTime) {
+              updateTaskRef.current(task.id, {
+                date: newDate,
+                startTime: minutesToTime(newStart),
+                endTime: minutesToTime(newEnd),
+              });
+            }
+          }
+        } else if (!taskDragRef.current.hasMoved) {
+          setEditingTask(taskDragRef.current.task);
+        }
+        taskDragRef.current = null;
+        taskDragTargetRef.current = null;
+        setTaskDrag(null);
+        return;
+      }
+
       if (!dragRef.current) return;
       const { day, startY, columnEl } = dragRef.current;
       const rect = columnEl.getBoundingClientRect();
@@ -252,11 +395,27 @@ export default function App() {
     setDragSelection({ dayIdx, top: y, height: 0 });
   };
 
+  const handleTaskDragStart = (task: Task, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const taskEl = e.currentTarget as HTMLElement;
+    const offsetY = e.clientY - taskEl.getBoundingClientRect().top;
+    taskDragRef.current = {
+      task,
+      duration: timeToMinutes(task.endTime) - timeToMinutes(task.startTime),
+      offsetY,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      hasMoved: false,
+    };
+  };
+
   const startOfCurrentWeek = startOfWeek(currentDate, { weekStartsOn: 1 });
   const weekDays = eachDayOfInterval({
     start: startOfCurrentWeek,
     end: endOfWeek(currentDate, { weekStartsOn: 1 })
   });
+  weekDaysRef.current = weekDays;
 
   const miniCalendarDays = eachDayOfInterval({
     start: startOfWeek(startOfMonth(viewDate), { weekStartsOn: 1 }),
@@ -265,7 +424,7 @@ export default function App() {
 
   const handleAddTask = async (data: any) => {
     try {
-      await addTask(data);
+      await undoableAddTask(data);
       setIsFormOpen(false);
       setNewTaskDefaults(null);
     } catch (err) {
@@ -276,8 +435,8 @@ export default function App() {
 
   const handleUpdateTask = async (data: any) => {
     if (editingTask) {
-      await updateTask(editingTask.id, data);
-      setEditingTask(null);
+      await undoableUpdateTask(editingTask.id, data);
+      setEditingTask({ ...editingTask, ...data });
     }
   };
 
@@ -288,7 +447,7 @@ export default function App() {
   };
 
   const handleReschedule = async (taskId: string, date: string, startTime: string, endTime: string) => {
-    await updateTask(taskId, { date, startTime, endTime });
+    await undoableUpdateTask(taskId, { date, startTime, endTime });
     setRescheduleTask(null);
     setEditingTask(null);
   };
@@ -298,11 +457,76 @@ export default function App() {
     return h * 60 + m;
   };
 
-  const getTaskStyle = (task: Task) => {
+  const getOverlapLayout = (dayTasks: Task[]): Map<string, { column: number; totalColumns: number }> => {
+    const layout = new Map<string, { column: number; totalColumns: number }>();
+    if (dayTasks.length === 0) return layout;
+
+    const sorted = [...dayTasks].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+    const clusters: Task[][] = [];
+    let currentCluster: Task[] = [sorted[0]];
+    let clusterEnd = timeToMinutes(sorted[0].endTime);
+
+    for (let i = 1; i < sorted.length; i++) {
+      const taskStart = timeToMinutes(sorted[i].startTime);
+      if (taskStart < clusterEnd) {
+        currentCluster.push(sorted[i]);
+        clusterEnd = Math.max(clusterEnd, timeToMinutes(sorted[i].endTime));
+      } else {
+        clusters.push(currentCluster);
+        currentCluster = [sorted[i]];
+        clusterEnd = timeToMinutes(sorted[i].endTime);
+      }
+    }
+    clusters.push(currentCluster);
+
+    for (const cluster of clusters) {
+      const columns: { end: number }[] = [];
+      for (const task of cluster) {
+        const start = timeToMinutes(task.startTime);
+        let placed = false;
+        for (let col = 0; col < columns.length; col++) {
+          if (start >= columns[col].end) {
+            columns[col].end = timeToMinutes(task.endTime);
+            layout.set(task.id, { column: col, totalColumns: 0 });
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          layout.set(task.id, { column: columns.length, totalColumns: 0 });
+          columns.push({ end: timeToMinutes(task.endTime) });
+        }
+      }
+      const total = columns.length;
+      for (const task of cluster) {
+        const entry = layout.get(task.id)!;
+        entry.totalColumns = total;
+      }
+    }
+
+    return layout;
+  };
+
+  const getTaskStyle = (task: Task, overlapInfo?: { column: number; totalColumns: number }) => {
     const start = timeToMinutes(task.startTime);
     const end = timeToMinutes(task.endTime);
     const duration = end - start;
     const minHeight = 22;
+
+    if (overlapInfo && overlapInfo.totalColumns > 1) {
+      const { column, totalColumns } = overlapInfo;
+      const widthPercent = 100 / totalColumns;
+      const leftPercent = column * widthPercent;
+      return {
+        top: `${start}px`,
+        height: `${Math.max(duration, minHeight)}px`,
+        left: `calc(${leftPercent}% + 2px)`,
+        right: 'auto',
+        width: `calc(${widthPercent}% - 4px)`,
+      };
+    }
+
     return {
       top: `${start}px`,
       height: `${Math.max(duration, minHeight)}px`,
@@ -323,6 +547,17 @@ export default function App() {
   const getTaskColor = (type: string) => {
     const c = taskColors[type] || defaultColor;
     return `${c.bg} border-l-[3px] ${c.border} ${c.text}`;
+  };
+
+  const getTaskParticipants = (task: Task) => {
+    if (!task.collaborators || task.collaborators.length === 0) return [];
+    const owner = {
+      uid: task.userId,
+      email: '' as string,
+      displayName: task.ownerDisplayName || '',
+      photoURL: task.ownerPhotoURL || '',
+    };
+    return [owner, ...task.collaborators.filter(c => c.uid !== task.userId)];
   };
 
   const getThemeCover = (themeId?: string): string | undefined => {
@@ -550,7 +785,7 @@ export default function App() {
           {viewMode === 'files' ? (
             <ThemeFilesView tasks={tasks} onPlayAudio={playAudioTrack} onViewText={(name, content) => setViewingText({ name, content })} currentUserPhoto={user?.photoURL || ''} currentUserName={user?.displayName || ''} />
           ) : viewMode === 'list' ? (
-            <ScrollArea className="flex-1">
+            <ScrollArea className="flex-1 min-h-0">
               <div className="max-w-3xl mx-auto p-6 space-y-6">
                 {/* Overdue Tasks */}
                 {(() => {
@@ -572,7 +807,7 @@ export default function App() {
                             className="flex items-center gap-3 p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 cursor-pointer transition-colors group"
                           >
                             <button
-                              onClick={(e) => { e.stopPropagation(); toggleComplete(task.id, false); }}
+                              onClick={(e) => { e.stopPropagation(); undoableToggleComplete(task.id, false); }}
                               className="shrink-0 text-amber-500 hover:text-amber-400 transition-colors"
                             >
                               <Circle size={20} />
@@ -601,7 +836,7 @@ export default function App() {
                               variant="ghost"
                               size="icon"
                               className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive"
-                              onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }}
+                              onClick={(e) => { e.stopPropagation(); undoableDeleteTask(task.id); }}
                             >
                               <Trash2 size={16} />
                             </Button>
@@ -660,7 +895,7 @@ export default function App() {
                               )}
                             >
                               <button
-                                onClick={(e) => { e.stopPropagation(); toggleComplete(task.id, !!task.completed); }}
+                                onClick={(e) => { e.stopPropagation(); undoableToggleComplete(task.id, !!task.completed); }}
                                 className={cn(
                                   "shrink-0 transition-colors",
                                   task.completed ? "text-green-500 hover:text-green-400" : "text-muted-foreground hover:text-foreground"
@@ -677,6 +912,23 @@ export default function App() {
                                   {task.themeId && <Music size={12} className="text-muted-foreground shrink-0" />}
                                   {task.seriesId && <Repeat size={12} className="text-muted-foreground shrink-0" />}
                                   {task.attachments && task.attachments.length > 0 && <Paperclip size={12} className="text-muted-foreground shrink-0" />}
+                                  {(() => {
+                                    const participants = getTaskParticipants(task);
+                                    if (participants.length === 0) return null;
+                                    return (
+                                      <div className="flex shrink-0">
+                                        {participants.slice(0, 3).map((c, i) => (
+                                          c.photoURL ? (
+                                            <img key={c.uid} src={c.photoURL} alt="" className="w-6 h-6 rounded-full ring-2 ring-background object-cover" style={{ marginLeft: i === 0 ? 0 : '-8px', zIndex: participants.length - i }} referrerPolicy="no-referrer" />
+                                          ) : (
+                                            <div key={c.uid} className="w-6 h-6 rounded-full bg-muted ring-2 ring-background flex items-center justify-center text-[9px] font-bold" style={{ marginLeft: i === 0 ? 0 : '-8px', zIndex: participants.length - i }}>
+                                              {(c.displayName || c.email || '?')[0]?.toUpperCase()}
+                                            </div>
+                                          )
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
                                   <Clock size={12} />
@@ -693,7 +945,7 @@ export default function App() {
                                 variant="ghost"
                                 size="icon"
                                 className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive"
-                                onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }}
+                                onClick={(e) => { e.stopPropagation(); undoableDeleteTask(task.id); }}
                               >
                                 <Trash2 size={16} />
                               </Button>
@@ -779,7 +1031,7 @@ export default function App() {
               </div>
 
               {/* Day Columns */}
-              <div className="flex-1 grid grid-cols-7 relative">
+              <div ref={gridRef} className="flex-1 grid grid-cols-7 relative">
                 {/* Grid Lines */}
                 <div className="absolute inset-0 pointer-events-none" style={{ top: '16px' }}>
                   {HOURS.map(hour => (
@@ -807,6 +1059,7 @@ export default function App() {
 
                 {weekDays.map((day, dayIdx) => {
                   const dayTasks = tasks.filter(t => isSameDay(new Date(t.date + 'T00:00:00'), day));
+                  const overlapLayout = getOverlapLayout(dayTasks);
                   const isDragging = dragSelection && dragSelection.dayIdx === dayIdx;
                   return (
                     <div
@@ -835,18 +1088,23 @@ export default function App() {
                       {dayTasks.map(task => {
                         const duration = getTaskDuration(task);
                         const isCompact = duration < 45;
+                        const overlap = overlapLayout.get(task.id);
+                        const hasOverlap = overlap && overlap.totalColumns > 1;
+                        const isBeingDragged = taskDrag?.task.id === task.id;
                         return (
                           <div
                             key={task.id}
                             data-task
-                            style={getTaskStyle(task)}
-                            onClick={() => setEditingTask(task)}
+                            style={getTaskStyle(task, overlap)}
+                            onMouseDown={(e) => handleTaskDragStart(task, e)}
                             title={`${task.title}\n${task.startTime} – ${task.endTime}`}
                             className={cn(
-                              "absolute left-1 right-1 rounded-md overflow-hidden cursor-pointer transition-all z-10 hover:brightness-110 hover:shadow-md group",
+                              "absolute rounded-md overflow-hidden cursor-grab transition-all z-10 hover:brightness-110 hover:shadow-md group",
+                              !hasOverlap && "left-1 right-1",
                               isCompact ? "px-2 py-0.5 flex items-center gap-1.5" : "p-1.5 px-2",
                               getTaskColor(task.type),
-                              task.completed && "opacity-40"
+                              task.completed && "opacity-40",
+                              isBeingDragged && "!opacity-25 !shadow-none"
                             )}
                           >
                             {isCompact ? (
@@ -858,20 +1116,54 @@ export default function App() {
                                 {task.themeId && <Music size={9} className="opacity-70 shrink-0" />}
                                 {task.seriesId && <Repeat size={9} className="opacity-70 shrink-0" />}
                                 {task.attachments && task.attachments.length > 0 && <Paperclip size={9} className="opacity-70 shrink-0" />}
+                                {(() => {
+                                  const participants = getTaskParticipants(task);
+                                  if (participants.length === 0) return null;
+                                  return (
+                                    <div className="flex shrink-0">
+                                      {participants.slice(0, 2).map((c, i) => (
+                                        c.photoURL ? (
+                                          <img key={c.uid} src={c.photoURL} alt="" className="w-4 h-4 rounded-full ring-[1.5px] ring-current/20 object-cover" style={{ marginLeft: i === 0 ? 0 : '-5px', zIndex: participants.length - i }} referrerPolicy="no-referrer" />
+                                        ) : (
+                                          <div key={c.uid} className="w-4 h-4 rounded-full bg-white/30 ring-[1.5px] ring-current/20 flex items-center justify-center text-[7px] font-bold" style={{ marginLeft: i === 0 ? 0 : '-5px', zIndex: participants.length - i }}>
+                                            {(c.displayName || c.email || '?')[0]?.toUpperCase()}
+                                          </div>
+                                        )
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
                               </>
                             ) : (
                               <>
-                                <div className={cn("truncate text-[11px] font-semibold leading-tight", task.completed && "line-through")}>{task.title}</div>
+                                <div className={cn("truncate text-[11px] font-semibold leading-tight", task.completed && "line-through", task.collaborators?.length ? "pr-6" : "")}>{task.title}</div>
                                 <div className="text-[10px] opacity-75 leading-tight">{task.startTime} – {task.endTime}</div>
                                 {duration >= 60 && task.description && (
                                   <div className="text-[10px] opacity-60 truncate mt-0.5 leading-tight">{task.description}</div>
                                 )}
-                                <div className="flex gap-1 mt-0.5 opacity-70">
+                                <div className="flex items-center gap-1 mt-0.5 opacity-70">
                                   {task.themeId && <Music size={9} />}
                                   {task.seriesId && <Repeat size={9} />}
                                   {task.attachments && task.attachments.length > 0 && <Paperclip size={9} />}
                                   {task.attachments?.some(a => a.type === 'audio') && <Music size={9} />}
                                 </div>
+                                {(() => {
+                                  const participants = getTaskParticipants(task);
+                                  if (participants.length === 0) return null;
+                                  return (
+                                    <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex">
+                                      {participants.slice(0, 4).map((c, i) => (
+                                        c.photoURL ? (
+                                          <img key={c.uid} src={c.photoURL} alt="" className="w-6 h-6 rounded-full ring-[1.5px] ring-black/20 object-cover" style={{ marginLeft: i === 0 ? 0 : '-7px', zIndex: participants.length - i, position: 'relative' }} referrerPolicy="no-referrer" />
+                                        ) : (
+                                          <div key={c.uid} className="w-6 h-6 rounded-full bg-white/30 ring-[1.5px] ring-black/20 flex items-center justify-center text-[9px] font-bold" style={{ marginLeft: i === 0 ? 0 : '-7px', zIndex: participants.length - i, position: 'relative' }}>
+                                            {(c.displayName || c.email || '?')[0]?.toUpperCase()}
+                                          </div>
+                                        )
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
                               </>
                             )}
                           </div>
@@ -900,6 +1192,31 @@ export default function App() {
                             </div>
                           );
                         })}
+                      {/* Ghost preview for task drag */}
+                      {taskDrag && taskDrag.targetDayIdx === dayIdx && (
+                        <div
+                          style={{
+                            top: `${taskDrag.targetTop}px`,
+                            height: `${Math.max(taskDrag.duration, 22)}px`,
+                          }}
+                          className={cn(
+                            "absolute left-1 right-1 rounded-md z-30 pointer-events-none border-2 border-dashed overflow-hidden",
+                            getTaskColor(taskDrag.task.type).replace(/\/90/g, '/30'),
+                            "!bg-primary/10 border-primary/50"
+                          )}
+                        >
+                          <div className={taskDrag.duration < 45 ? "px-2 py-0.5 flex items-center gap-1.5" : "p-1.5 px-2"}>
+                            <div className="truncate text-[11px] font-semibold leading-tight text-primary/80">
+                              {taskDrag.task.title}
+                            </div>
+                            {taskDrag.duration >= 45 && (
+                              <div className="text-[10px] text-primary/60 leading-tight">
+                                {minutesToTime(taskDrag.targetTop)} – {minutesToTime(Math.min(taskDrag.targetTop + taskDrag.duration, 1440))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1052,16 +1369,25 @@ export default function App() {
         onOpenChange={setIsThemeOpen}
         tasks={tasks}
         settings={settings}
-        onCreateTheme={addMultipleTasks}
+        onCreateTheme={undoableAddMultipleTasks}
       />
 
       {/* Edit Dialog */}
-      <Dialog open={!!editingTask} onOpenChange={(open) => !open && setEditingTask(null)}>
+      <Dialog open={!!editingTask} onOpenChange={(open) => { if (!open) { setEditingTask(null); setIsDetailEditMode(false); } }}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Detalles de la Tarea</DialogTitle>
+            <DialogTitle>{isDetailEditMode ? 'Editar Tarea' : 'Detalles de la Tarea'}</DialogTitle>
           </DialogHeader>
-          {editingTask && (
+          {editingTask && isDetailEditMode ? (
+            <TaskForm
+              initialData={editingTask}
+              onSubmit={async (data) => {
+                await handleUpdateTask(data);
+                setIsDetailEditMode(false);
+              }}
+              onCancel={() => setIsDetailEditMode(false)}
+            />
+          ) : editingTask && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <Badge className={cn("capitalize", getTaskColor(editingTask.type))}>
@@ -1071,8 +1397,17 @@ export default function App() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    onClick={() => setIsDetailEditMode(true)}
+                    className="text-muted-foreground"
+                    title="Editar tarea"
+                  >
+                    <Edit2 size={18} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => {
-                      toggleComplete(editingTask.id, !!editingTask.completed);
+                      undoableToggleComplete(editingTask.id, !!editingTask.completed);
                       setEditingTask({ ...editingTask, completed: !editingTask.completed });
                     }}
                     className={cn(editingTask.completed ? "text-green-500" : "text-muted-foreground")}
@@ -1080,7 +1415,7 @@ export default function App() {
                   >
                     {editingTask.completed ? <CheckCircle2 size={18} /> : <Circle size={18} />}
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => { deleteTask(editingTask.id); setEditingTask(null); }} className="text-destructive" title="Eliminar esta tarea">
+                  <Button variant="ghost" size="icon" onClick={() => { undoableDeleteTask(editingTask.id); setEditingTask(null); }} className="text-destructive" title="Eliminar esta tarea">
                     <Trash2 size={18} />
                   </Button>
                   {editingTask.seriesId && (
@@ -1089,7 +1424,7 @@ export default function App() {
                       size="sm"
                       onClick={() => {
                         if (confirm('¿Eliminar todas las tareas de esta serie?')) {
-                          deleteTaskSeries(editingTask.seriesId!);
+                          undoableDeleteTaskSeries(editingTask.seriesId!);
                           setEditingTask(null);
                         }
                       }}
@@ -1151,6 +1486,44 @@ export default function App() {
               </div>
 
               <p className="text-muted-foreground leading-relaxed">{editingTask.description}</p>
+
+              {editingTask.collaborators && editingTask.collaborators.length > 0 && (() => {
+                const owner = {
+                  uid: editingTask.userId,
+                  displayName: editingTask.ownerDisplayName || '',
+                  photoURL: editingTask.ownerPhotoURL || '',
+                };
+                const allParticipants = [
+                  owner,
+                  ...editingTask.collaborators.filter(c => c.uid !== editingTask.userId),
+                ];
+                return (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                      <Users size={16} /> Participantes
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {allParticipants.map(c => (
+                        <div key={c.uid} className="flex items-center gap-2 bg-muted/50 rounded-full px-3 py-1.5">
+                          {c.photoURL ? (
+                            <img src={c.photoURL} alt="" className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold">
+                              {(c.displayName || (c as any).email || '?')[0]?.toUpperCase()}
+                            </div>
+                          )}
+                          <span className="text-sm">
+                            {c.displayName || (c as any).email || 'Sin nombre'}
+                            {c.uid === editingTask.userId && (
+                              <span className="text-xs text-muted-foreground ml-1">(creador)</span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="space-y-3">
                 <h4 className="text-sm font-semibold flex items-center gap-2">
@@ -1232,7 +1605,7 @@ export default function App() {
                         try {
                           const textAtt = { name: 'Letra.txt', type: 'text' as const, url: '', content: letraText.trim() };
                           const newAttachments = [...(editingTask.attachments || []), textAtt];
-                          await updateTask(editingTask.id, { attachments: newAttachments } as any);
+                          await undoableUpdateTask(editingTask.id, { attachments: newAttachments } as any);
                           setEditingTask({ ...editingTask, attachments: newAttachments } as Task);
                           setLetraText('');
                         } catch (err) {
@@ -1272,7 +1645,7 @@ export default function App() {
                         const data = await response.json();
                         if (data.url) {
                           const newAttachments = [...(editingTask.attachments || []), { name: data.name, type: data.type, url: data.url }];
-                          await updateTask(editingTask.id, { attachments: newAttachments } as any);
+                          await undoableUpdateTask(editingTask.id, { attachments: newAttachments } as any);
                           setEditingTask({ ...editingTask, attachments: newAttachments } as Task);
                         }
                       } catch (err) {
@@ -1318,9 +1691,17 @@ export default function App() {
         tasks={tasks}
         settings={settings}
         user={user}
-        onAddTasks={addMultipleTasks}
-        onAddTask={addTask}
+        onAddTasks={undoableAddMultipleTasks}
+        onAddTask={undoableAddTask}
         onPreviewTasks={handlePreviewTasks}
+      />
+
+      {/* Undo Toast */}
+      <UndoToast
+        message={toastMessage}
+        onDismiss={dismissToast}
+        onUndo={executeUndo}
+        canUndo={canUndo}
       />
     </div>
   );

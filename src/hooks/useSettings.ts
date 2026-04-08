@@ -16,6 +16,9 @@ export function useSettings() {
     }
 
     const userRef = doc(db, 'users', user.uid);
+
+    ensureUserProfile(user);
+
     const unsubscribe = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -46,6 +49,8 @@ export function useSettings() {
     } else {
       await setDoc(userRef, {
         email: user.email,
+        displayName: user.displayName || '',
+        photoURL: user.photoURL || '',
         role: 'user',
         ...newSettings,
       });
@@ -53,4 +58,37 @@ export function useSettings() {
   };
 
   return { settings, saveSettings, loading };
+}
+
+async function ensureUserProfile(user: { uid: string; email: string | null; displayName: string | null; photoURL: string | null }) {
+  try {
+    const userRef = doc(db, 'users', user.uid);
+    const snap = await getDoc(userRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      const updates: Record<string, string> = {};
+      if (user.displayName && data.displayName !== user.displayName) {
+        updates.displayName = user.displayName;
+      }
+      if (user.photoURL && data.photoURL !== user.photoURL) {
+        updates.photoURL = user.photoURL;
+      }
+      if (!data.email && user.email) {
+        updates.email = user.email;
+      }
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(userRef, updates);
+      }
+    } else {
+      await setDoc(userRef, {
+        email: user.email || '',
+        displayName: user.displayName || '',
+        photoURL: user.photoURL || '',
+        role: 'user',
+        ...DEFAULT_SETTINGS,
+      });
+    }
+  } catch (err) {
+    console.error('Error ensuring user profile:', err);
+  }
 }

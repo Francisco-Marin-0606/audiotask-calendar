@@ -15,6 +15,13 @@ service cloud.firestore {
     //   - workEndTime: string (HH:mm, work schedule end)
     //   - workDays: list of numbers (0=Sun, 1=Mon, ..., 6=Sat)
     //
+    // Subcollection: users/{userId}/contacts/{contactId}
+    // Fields:
+    //   - email: string
+    //   - displayName: string
+    //   - photoURL: string
+    //   - lastUsed: timestamp
+    //
     // Collection: tasks
     // Fields:
     //   - title: string (required)
@@ -25,7 +32,7 @@ service cloud.firestore {
     //   - type: string (audiovisual, personal, admin)
     //   - attachments: list of maps
     //   - completed: bool
-    //   - userId: string (required)
+    //   - userId: string (required, task owner)
     //   - createdAt: timestamp
     //   - seriesId: string (optional, links recurring tasks)
     //   - recurrenceIndex: number (optional, position in series)
@@ -33,6 +40,8 @@ service cloud.firestore {
     //   - themeId: string (optional, groups tasks of a music theme)
     //   - themeName: string (optional, display name for the theme)
     //   - themeOrder: number (optional, step order within the theme)
+    //   - collaborators: list of maps (optional, {uid, email, displayName, photoURL})
+    //   - participantIds: list of strings (optional, [userId, ...collaboratorUids])
     //
     // ===============================================================
 
@@ -68,20 +77,33 @@ service cloud.firestore {
              data.type in ['audiovisual', 'personal', 'admin'];
     }
 
+    function isParticipant() {
+      return isAuthenticated() &&
+             resource.data.participantIds is list &&
+             request.auth.uid in resource.data.participantIds;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
       allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+
+      match /contacts/{contactId} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     match /tasks/{taskId} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isParticipant() || isAdmin());
       allow create: if isAuthenticated() && isValidTask(request.resource.data);
-      allow update: if isAuthenticated() && isValidTask(request.resource.data) && resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        (isValidTask(request.resource.data) && resource.data.userId == request.auth.uid) ||
+        (isParticipant() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['completed']))
+      );
       allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
     }
   }

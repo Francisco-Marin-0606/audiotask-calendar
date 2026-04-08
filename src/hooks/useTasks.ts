@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { useState, useEffect, useRef } from 'react';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, writeBatch, getDocs } from 'firebase/firestore';
 import { db, auth } from '@/src/lib/firebase';
-import { Task, TaskType, Attachment, RecurrenceConfig } from '@/src/types';
+import { Task, TaskType, Attachment, RecurrenceConfig, Collaborator } from '@/src/types';
 
 enum OperationType {
   CREATE = 'create',
@@ -69,7 +69,7 @@ export function useTasks() {
 
     const q = query(
       collection(db, 'tasks'),
-      where('userId', '==', auth.currentUser.uid)
+      where('participantIds', 'array-contains', auth.currentUser.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -90,10 +90,46 @@ export function useTasks() {
     return () => unsubscribe();
   }, [auth.currentUser]);
 
-  const addTask = async (taskData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'completed'> & { recurrence?: RecurrenceConfig }) => {
+  const migrationDone = useRef(false);
+  useEffect(() => {
+    if (!auth.currentUser || migrationDone.current) return;
+    migrationDone.current = true;
+
+    const uid = auth.currentUser.uid;
+    const legacyQuery = query(
+      collection(db, 'tasks'),
+      where('userId', '==', uid)
+    );
+
+    getDocs(legacyQuery).then(async (snapshot) => {
+      const toMigrate = snapshot.docs.filter(d => {
+        const data = d.data();
+        return !data.participantIds || !Array.isArray(data.participantIds);
+      });
+      if (toMigrate.length === 0) return;
+
+      const batchSize = 400;
+      for (let i = 0; i < toMigrate.length; i += batchSize) {
+        const batch = writeBatch(db);
+        const chunk = toMigrate.slice(i, i + batchSize);
+        for (const d of chunk) {
+          batch.update(d.ref, { participantIds: [uid] });
+        }
+        await batch.commit();
+      }
+      console.log(`Migrated ${toMigrate.length} tasks to include participantIds`);
+    }).catch(err => {
+      console.error('Migration error:', err);
+    });
+  }, [auth.currentUser]);
+
+  const addTask = async (taskData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'completed'> & { recurrence?: RecurrenceConfig }): Promise<string[]> => {
     if (!auth.currentUser) throw new Error('No authenticated user');
 
     const { recurrence, ...baseTaskData } = taskData;
+    const collaboratorIds = (baseTaskData.collaborators || []).map(c => c.uid);
+    const participantIds = [auth.currentUser.uid, ...collaboratorIds];
+    const createdIds: string[] = [];
 
     if (recurrence && recurrence.count > 1) {
       const seriesId = crypto.randomUUID();
@@ -115,12 +151,14 @@ export function useTasks() {
           ownerDisplayName: auth.currentUser.displayName || '',
           ownerPhotoURL: auth.currentUser.photoURL || '',
           createdAt: serverTimestamp(),
+          participantIds,
           seriesId,
           recurrenceIndex: i,
           recurrenceTotal: recurrence.count,
         };
 
         const newDocRef = doc(tasksRef);
+        createdIds.push(newDocRef.id);
         batch.set(newDocRef, docData);
       }
 
@@ -147,7 +185,8 @@ export function useTasks() {
         userId: auth.currentUser.uid,
         ownerDisplayName: auth.currentUser.displayName || '',
         ownerPhotoURL: auth.currentUser.photoURL || '',
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        participantIds,
       };
       console.log('📝 Creating task:', JSON.stringify(docData, null, 2));
       try {
@@ -160,12 +199,15 @@ export function useTasks() {
             )), timeoutMs)
           )
         ]);
+        createdIds.push(result.id);
         console.log('✅ Task created successfully:', result.id);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, 'tasks');
         throw err;
       }
     }
+
+    return createdIds;
   };
 
   const updateTask = async (id: string, taskData: Partial<Task>) => {
@@ -212,13 +254,16 @@ export function useTasks() {
     }
   };
 
-  const addMultipleTasks = async (tasksData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'completed'>[]) => {
+  const addMultipleTasks = async (tasksData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'completed'>[]): Promise<string[]> => {
     if (!auth.currentUser) throw new Error('No authenticated user');
 
     const batch = writeBatch(db);
     const tasksRef = collection(db, 'tasks');
+    const createdIds: string[] = [];
 
     for (const taskData of tasksData) {
+      const collaboratorIds = (taskData.collaborators || []).map(c => c.uid);
+      const participantIds = [auth.currentUser.uid, ...collaboratorIds];
       const docData = {
         ...taskData,
         completed: false,
@@ -226,8 +271,10 @@ export function useTasks() {
         ownerDisplayName: auth.currentUser.displayName || '',
         ownerPhotoURL: auth.currentUser.photoURL || '',
         createdAt: serverTimestamp(),
+        participantIds,
       };
       const newDocRef = doc(tasksRef);
+      createdIds.push(newDocRef.id);
       batch.set(newDocRef, docData);
     }
 
@@ -247,7 +294,40 @@ export function useTasks() {
       handleFirestoreError(err, OperationType.CREATE, 'tasks (theme batch)');
       throw err;
     }
+
+    return createdIds;
   };
 
-  return { tasks, loading, error, addTask, addMultipleTasks, updateTask, deleteTask, deleteTaskSeries, toggleComplete };
+  const restoreTask = async (taskData: Omit<Task, 'id'>, id?: string) => {
+    if (!auth.currentUser) throw new Error('No authenticated user');
+    try {
+      if (id) {
+        const taskRef = doc(db, 'tasks', id);
+        const { ...data } = taskData;
+        await (await import('firebase/firestore')).setDoc(taskRef, data);
+      } else {
+        await addDoc(collection(db, 'tasks'), taskData);
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'tasks (restore)');
+      throw err;
+    }
+  };
+
+  const restoreMultipleTasks = async (tasksWithIds: { id: string; data: Omit<Task, 'id'> }[]) => {
+    if (!auth.currentUser) throw new Error('No authenticated user');
+    const batch = writeBatch(db);
+    for (const { id, data } of tasksWithIds) {
+      const taskRef = doc(db, 'tasks', id);
+      batch.set(taskRef, data);
+    }
+    try {
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'tasks (restore batch)');
+      throw err;
+    }
+  };
+
+  return { tasks, loading, error, addTask, addMultipleTasks, updateTask, deleteTask, deleteTaskSeries, toggleComplete, restoreTask, restoreMultipleTasks };
 }
